@@ -16,6 +16,7 @@ import { AppointmentModule } from './modules/appointment/appointment.module';
 import { PrescriptionModule } from './modules/prescription/prescription.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { MedicalRecordModule } from './modules/medical-record/medical-record.module';
+import { UserModule } from './modules/user/user.module';
 
 
 
@@ -39,7 +40,7 @@ import { MedicalRecordModule } from './modules/medical-record/medical-record.mod
     PrescriptionModule,
     BillingModule,
     MedicalRecordModule,
-
+    UserModule,
 
 
 
