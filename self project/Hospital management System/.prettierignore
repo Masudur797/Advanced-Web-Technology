@@ -1,5 +1,0 @@
-# *.ts
-.yarn
-.next
-dist
-node_modules
