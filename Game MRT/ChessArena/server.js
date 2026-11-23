@@ -15,7 +15,7 @@ const io = new Server(httpServer);
 // Local practice chess game
 const localGame = new Chess();
 
-// Online multiplayer rooms
+// Multiplayer rooms
 const rooms = new Map();
 
 const SQUARE_RE = /^[a-h][1-8]$/;
@@ -24,18 +24,16 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
 // =====================================
-// GAME STATE
+// CHESS GAME STATE
 // =====================================
 
 function getGameState(game) {
     let status = "Game in progress";
 
     if (game.isCheckmate()) {
-        const winner = game.turn() === "w"
-            ? "Black"
-            : "White";
-
-        status = `Checkmate! ${winner} wins!`;
+        status = game.turn() === "w"
+            ? "Checkmate! Black wins!"
+            : "Checkmate! White wins!";
 
     } else if (game.isDraw()) {
         status = "Game Draw!";
@@ -58,7 +56,8 @@ function getGameState(game) {
 // =====================================
 
 function generateRoomCode() {
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    const chars =
+        "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
     let code;
 
@@ -88,16 +87,35 @@ function getClockState(room) {
     };
 }
 
-// Game state with timeout information
+// =====================================
+// ONLINE ROOM GAME STATE
+// =====================================
+
 function getRoomGameState(room) {
     const state = getGameState(room.game);
 
+    // Time Out
     if (room.timedOutColor) {
         state.gameOver = true;
 
-        state.status = room.timedOutColor === "w"
-            ? "Time out! Black wins."
-            : "Time out! White wins.";
+        state.status =
+            room.timedOutColor === "w"
+                ? "Time out! Black wins."
+                : "Time out! White wins.";
+
+    // Resign
+    } else if (room.resignedColor) {
+        state.gameOver = true;
+
+        state.status =
+            room.resignedColor === "w"
+                ? "White resigned! Black wins."
+                : "Black resigned! White wins.";
+
+    // Draw by agreement
+    } else if (room.drawAgreed) {
+        state.gameOver = true;
+        state.status = "Draw by agreement.";
     }
 
     state.clock = getClockState(room);
@@ -113,18 +131,30 @@ function getRoomState(room) {
     return {
         roomCode: room.code,
         playerCount: room.black ? 2 : 1,
+
         whiteConnected: Boolean(room.white),
         blackConnected: Boolean(room.black),
-        ready: Boolean(room.white && room.black),
+
+        ready: Boolean(
+            room.white && room.black
+        ),
+
         game: getRoomGameState(room)
     };
 }
 
+// =====================================
+// FIND PLAYER ROOM
+// =====================================
+
 function getPlayerRoom(socket) {
     const code = socket.data.roomCode;
+
     const room = code && rooms.get(code);
 
-    if (!room) return null;
+    if (!room) {
+        return null;
+    }
 
     const isMember =
         room.white === socket.id ||
@@ -134,17 +164,28 @@ function getPlayerRoom(socket) {
 }
 
 // =====================================
-// SERVER-SIDE CLOCK LOGIC
+// CHECK IF MATCH FINISHED
 // =====================================
 
-// Deduct actual elapsed time
+function isRoomGameOver(room) {
+    return Boolean(
+        room.timedOutColor ||
+        room.resignedColor ||
+        room.drawAgreed ||
+        room.game.isGameOver()
+    );
+}
+
+// =====================================
+// SERVER-SIDE CHESS CLOCK
+// =====================================
+
 function advanceClock(room) {
     const clock = room.clock;
 
     if (
         !clock.activeColor ||
-        room.timedOutColor ||
-        room.game.isGameOver()
+        isRoomGameOver(room)
     ) {
         return false;
     }
@@ -156,10 +197,12 @@ function advanceClock(room) {
         now - clock.lastUpdatedAt
     );
 
-    const field = clock.activeColor === "w"
-        ? "whiteMs"
-        : "blackMs";
+    const field =
+        clock.activeColor === "w"
+            ? "whiteMs"
+            : "blackMs";
 
+    // Deduct elapsed time
     clock[field] = Math.max(
         0,
         clock[field] - elapsed
@@ -167,9 +210,10 @@ function advanceClock(room) {
 
     clock.lastUpdatedAt = now;
 
-    // Time expired
+    // Time finished
     if (clock[field] === 0) {
-        room.timedOutColor = clock.activeColor;
+        room.timedOutColor =
+            clock.activeColor;
 
         clock.activeColor = null;
         clock.lastUpdatedAt = null;
@@ -180,7 +224,10 @@ function advanceClock(room) {
     return false;
 }
 
-// Broadcast updated chess game
+// =====================================
+// BROADCAST CHESS GAME
+// =====================================
+
 function publishRoomGame(room) {
     io.to(room.code).emit(
         "room:game",
@@ -188,9 +235,38 @@ function publishRoomGame(room) {
     );
 }
 
-// Advance time and notify on timeout
+// =====================================
+// CANCEL PENDING DRAW OFFER
+// =====================================
+
+function resolvePendingDraw(room, reason) {
+    if (!room.pendingDrawOffer) {
+        return;
+    }
+
+    room.pendingDrawOffer = null;
+
+    io.to(room.code).emit(
+        "game:draw-resolved",
+        {
+            roomCode: room.code,
+            accepted: false,
+            reason
+        }
+    );
+}
+
+// =====================================
+// UPDATE CLOCK AND HANDLE TIMEOUT
+// =====================================
+
 function updateClockAndPublishTimeout(room) {
     if (advanceClock(room)) {
+        resolvePendingDraw(
+            room,
+            "game-over"
+        );
+
         console.log(
             "TIME OUT:",
             room.code,
@@ -205,6 +281,7 @@ function updateClockAndPublishTimeout(room) {
 // LOCAL PRACTICE REST API
 // =====================================
 
+// Health Check
 app.get("/api/health", (req, res) => {
     res.json({
         success: true,
@@ -212,35 +289,42 @@ app.get("/api/health", (req, res) => {
     });
 });
 
+// Get local game
 app.get("/api/game", (req, res) => {
     res.json(getGameState(localGame));
 });
 
-app.get("/api/game/legal-moves/:square", (req, res) => {
-    const square = req.params.square;
+// Get legal moves
+app.get(
+    "/api/game/legal-moves/:square",
+    (req, res) => {
 
-    if (!SQUARE_RE.test(square)) {
-        return res.status(400).json({
-            error: "Invalid square"
+        const square = req.params.square;
+
+        if (!SQUARE_RE.test(square)) {
+            return res.status(400).json({
+                error: "Invalid square"
+            });
+        }
+
+        const moves = localGame.isGameOver()
+            ? []
+            : localGame.moves({
+                square,
+                verbose: true
+            });
+
+        res.json({
+            moves: moves.map(move => ({
+                from: move.from,
+                to: move.to,
+                san: move.san
+            }))
         });
     }
+);
 
-    const moves = localGame.isGameOver()
-        ? []
-        : localGame.moves({
-            square,
-            verbose: true
-        });
-
-    res.json({
-        moves: moves.map(move => ({
-            from: move.from,
-            to: move.to,
-            san: move.san
-        }))
-    });
-});
-
+// Make local move
 app.post("/api/game/move", (req, res) => {
     const { from, to } = req.body || {};
 
@@ -281,6 +365,7 @@ app.post("/api/game/move", (req, res) => {
     }
 });
 
+// Reset local game
 app.post("/api/game/reset", (req, res) => {
     localGame.reset();
 
@@ -295,15 +380,23 @@ app.post("/api/game/reset", (req, res) => {
 // =====================================
 
 io.on("connection", socket => {
-    console.log("Player Connected:", socket.id);
 
-    // ---------------------------------
+    console.log(
+        "Player Connected:",
+        socket.id
+    );
+
+    // =================================
     // CREATE ROOM
-    // ---------------------------------
+    // =================================
 
     socket.on(
         "room:create",
         (optionsOrCallback, maybeCallback) => {
+
+            // Support both:
+            // room:create(callback)
+            // room:create({ minutes: 5 }, callback)
 
             const callback =
                 typeof optionsOrCallback === "function"
@@ -311,12 +404,16 @@ io.on("connection", socket => {
                     : maybeCallback;
 
             const options =
-                typeof optionsOrCallback === "object" &&
-                optionsOrCallback !== null
+                optionsOrCallback &&
+                typeof optionsOrCallback === "object"
                     ? optionsOrCallback
                     : {};
 
-            if (typeof callback !== "function") return;
+            if (
+                typeof callback !== "function"
+            ) {
+                return;
+            }
 
             if (getPlayerRoom(socket)) {
                 return callback({
@@ -325,10 +422,10 @@ io.on("connection", socket => {
                 });
             }
 
-            // Default = 5 minutes
-            const minutes = options.minutes === undefined
-                ? 5
-                : options.minutes;
+            const minutes =
+                options.minutes === undefined
+                    ? 5
+                    : options.minutes;
 
             if (![5, 10].includes(minutes)) {
                 return callback({
@@ -338,18 +435,29 @@ io.on("connection", socket => {
             }
 
             const code = generateRoomCode();
-            const initialMs = minutes * 60 * 1000;
+
+            const initialMs =
+                minutes * 60 * 1000;
 
             const room = {
                 code,
+
                 white: socket.id,
                 black: null,
 
                 game: new Chess(),
 
                 minutes,
-                timedOutColor: null,
 
+                // Match results
+                timedOutColor: null,
+                resignedColor: null,
+
+                // Draw Offer
+                pendingDrawOffer: null,
+                drawAgreed: false,
+
+                // Chess Timer
                 clock: {
                     whiteMs: initialMs,
                     blackMs: initialMs,
@@ -385,282 +493,585 @@ io.on("connection", socket => {
         }
     );
 
-    // ---------------------------------
-    // JOIN ROOM AND START CLOCK
-    // ---------------------------------
+    // =================================
+    // JOIN ROOM
+    // =================================
 
-    socket.on("room:join", (requestedCode, callback) => {
-        if (typeof callback !== "function") return;
+    socket.on(
+        "room:join",
+        (requestedCode, callback) => {
 
-        if (getPlayerRoom(socket)) {
-            return callback({
-                ok: false,
-                error: "Already in a room"
-            });
-        }
+            if (
+                typeof callback !== "function"
+            ) {
+                return;
+            }
 
-        if (
-            typeof requestedCode !== "string" ||
-            !/^[A-Z0-9]{6}$/.test(
-                requestedCode.trim().toUpperCase()
-            )
-        ) {
-            return callback({
-                ok: false,
-                error: "Invalid Room Code"
-            });
-        }
+            if (getPlayerRoom(socket)) {
+                return callback({
+                    ok: false,
+                    error: "Already in a room"
+                });
+            }
 
-        const code = requestedCode.trim().toUpperCase();
-        const room = rooms.get(code);
+            if (
+                typeof requestedCode !== "string" ||
+                !/^[A-Z0-9]{6}$/.test(
+                    requestedCode
+                        .trim()
+                        .toUpperCase()
+                )
+            ) {
+                return callback({
+                    ok: false,
+                    error: "Invalid Room Code"
+                });
+            }
 
-        if (!room) {
-            return callback({
-                ok: false,
-                error: "Room Not Found"
-            });
-        }
+            const code =
+                requestedCode
+                    .trim()
+                    .toUpperCase();
 
-        if (room.black) {
-            return callback({
-                ok: false,
-                error: "Room is already full"
-            });
-        }
+            const room = rooms.get(code);
 
-        room.black = socket.id;
+            if (!room) {
+                return callback({
+                    ok: false,
+                    error: "Room Not Found"
+                });
+            }
 
-        socket.join(code);
+            if (room.black) {
+                return callback({
+                    ok: false,
+                    error: "Room is already full"
+                });
+            }
 
-        socket.data.roomCode = code;
-        socket.data.color = "b";
+            room.black = socket.id;
 
-        // Start White player's clock
-        room.clock.activeColor = "w";
-        room.clock.lastUpdatedAt = Date.now();
+            socket.join(code);
 
-        console.log(
-            "Player Joined:",
-            code,
-            "- clock started"
-        );
+            socket.data.roomCode = code;
+            socket.data.color = "b";
 
-        callback({
-            ok: true,
-            roomCode: code,
-            color: "b",
-            state: getRoomState(room)
-        });
+            // Start White timer
+            room.clock.activeColor = "w";
+            room.clock.lastUpdatedAt = Date.now();
 
-        io.to(code).emit(
-            "room:state",
-            getRoomState(room)
-        );
-    });
+            console.log(
+                "Player Joined:",
+                code,
+                "- clock started"
+            );
 
-    // ---------------------------------
-    // GET ONLINE GAME STATE
-    // ---------------------------------
-
-    socket.on("game:state", callback => {
-        if (typeof callback !== "function") return;
-
-        const room = getPlayerRoom(socket);
-
-        if (!room) {
-            return callback({
-                ok: false,
-                error: "You are not in a room"
-            });
-        }
-
-        updateClockAndPublishTimeout(room);
-
-        callback({
-            ok: true,
-            game: getRoomGameState(room)
-        });
-    });
-
-    // ---------------------------------
-    // GET LEGAL MOVES
-    // ---------------------------------
-
-    socket.on("game:legal-moves", (square, callback) => {
-        if (typeof callback !== "function") return;
-
-        const room = getPlayerRoom(socket);
-
-        if (!room || !room.black) {
-            return callback({
-                ok: false,
-                error: "Waiting for both players"
-            });
-        }
-
-        updateClockAndPublishTimeout(room);
-
-        if (room.timedOutColor || room.game.isGameOver()) {
-            return callback({
-                ok: false,
-                error: "Game already finished"
-            });
-        }
-
-        if (
-            typeof square !== "string" ||
-            !SQUARE_RE.test(square)
-        ) {
-            return callback({
-                ok: false,
-                error: "Invalid square"
-            });
-        }
-
-        if (room.game.turn() !== socket.data.color) {
-            return callback({
-                ok: false,
-                error: "Not your turn"
-            });
-        }
-
-        const piece = room.game.get(square);
-
-        if (!piece || piece.color !== socket.data.color) {
-            return callback({
+            callback({
                 ok: true,
-                moves: []
+                roomCode: code,
+                color: "b",
+                state: getRoomState(room)
+            });
+
+            io.to(code).emit(
+                "room:state",
+                getRoomState(room)
+            );
+        }
+    );
+
+    // =================================
+    // GET GAME STATE
+    // =================================
+
+    socket.on(
+        "game:state",
+        callback => {
+
+            if (
+                typeof callback !== "function"
+            ) {
+                return;
+            }
+
+            const room = getPlayerRoom(socket);
+
+            if (!room) {
+                return callback({
+                    ok: false,
+                    error: "You are not in a room"
+                });
+            }
+
+            updateClockAndPublishTimeout(room);
+
+            callback({
+                ok: true,
+                game: getRoomGameState(room)
             });
         }
+    );
 
-        const moves = room.game.moves({
-            square,
-            verbose: true
-        });
+    // =================================
+    // GET LEGAL MOVES
+    // =================================
 
-        callback({
-            ok: true,
-            moves: moves.map(move => ({
-                from: move.from,
-                to: move.to,
-                san: move.san,
-                promotion: move.promotion || null
-            }))
-        });
-    });
+    socket.on(
+        "game:legal-moves",
+        (square, callback) => {
 
-    // ---------------------------------
+            if (
+                typeof callback !== "function"
+            ) {
+                return;
+            }
+
+            const room = getPlayerRoom(socket);
+
+            if (!room || !room.black) {
+                return callback({
+                    ok: false,
+                    error: "Waiting for both players"
+                });
+            }
+
+            updateClockAndPublishTimeout(room);
+
+            if (isRoomGameOver(room)) {
+                return callback({
+                    ok: false,
+                    error: "Game already finished"
+                });
+            }
+
+            if (
+                typeof square !== "string" ||
+                !SQUARE_RE.test(square)
+            ) {
+                return callback({
+                    ok: false,
+                    error: "Invalid square"
+                });
+            }
+
+            if (
+                room.game.turn() !==
+                socket.data.color
+            ) {
+                return callback({
+                    ok: false,
+                    error: "Not your turn"
+                });
+            }
+
+            const piece = room.game.get(square);
+
+            if (
+                !piece ||
+                piece.color !== socket.data.color
+            ) {
+                return callback({
+                    ok: true,
+                    moves: []
+                });
+            }
+
+            const moves = room.game.moves({
+                square,
+                verbose: true
+            });
+
+            callback({
+                ok: true,
+                moves: moves.map(move => ({
+                    from: move.from,
+                    to: move.to,
+                    san: move.san,
+                    promotion:
+                        move.promotion || null
+                }))
+            });
+        }
+    );
+
+    // =================================
     // MAKE ONLINE MOVE
-    // ---------------------------------
+    // =================================
 
-    socket.on("game:move", (data, callback) => {
-        if (typeof callback !== "function") return;
+    socket.on(
+        "game:move",
+        (data, callback) => {
 
-        const room = getPlayerRoom(socket);
+            if (
+                typeof callback !== "function"
+            ) {
+                return;
+            }
 
-        if (!room || !room.black) {
-            return callback({
-                ok: false,
-                error: "Waiting for both players"
+            const room = getPlayerRoom(socket);
+
+            if (!room || !room.black) {
+                return callback({
+                    ok: false,
+                    error: "Waiting for both players"
+                });
+            }
+
+            // Update clock first
+            updateClockAndPublishTimeout(room);
+
+            if (isRoomGameOver(room)) {
+                return callback({
+                    ok: false,
+                    error: "Game already finished"
+                });
+            }
+
+            if (
+                room.game.turn() !==
+                socket.data.color
+            ) {
+                return callback({
+                    ok: false,
+                    error: "Not your turn"
+                });
+            }
+
+            if (
+                !data ||
+                typeof data !== "object" ||
+                typeof data.from !== "string" ||
+                typeof data.to !== "string" ||
+                !SQUARE_RE.test(data.from) ||
+                !SQUARE_RE.test(data.to)
+            ) {
+                return callback({
+                    ok: false,
+                    error: "Invalid move format"
+                });
+            }
+
+            const promotion =
+                data.promotion || "q";
+
+            if (
+                !["q", "r", "b", "n"].includes(
+                    promotion
+                )
+            ) {
+                return callback({
+                    ok: false,
+                    error: "Invalid promotion"
+                });
+            }
+
+            try {
+                const move = room.game.move({
+                    from: data.from,
+                    to: data.to,
+                    promotion
+                });
+
+                // A completed move cancels
+                // a pending draw offer
+                resolvePendingDraw(
+                    room,
+                    "move"
+                );
+
+                // Switch timer
+                if (room.game.isGameOver()) {
+                    room.clock.activeColor = null;
+                    room.clock.lastUpdatedAt = null;
+
+                } else {
+                    room.clock.activeColor =
+                        room.game.turn();
+
+                    room.clock.lastUpdatedAt =
+                        Date.now();
+                }
+
+                console.log(
+                    `Room ${room.code}: ${move.san}`
+                );
+
+                publishRoomGame(room);
+
+                callback({
+                    ok: true,
+                    move: move.san,
+                    game: getRoomGameState(room)
+                });
+
+            } catch {
+                callback({
+                    ok: false,
+                    error: "Illegal chess move"
+                });
+            }
+        }
+    );
+
+    // =================================
+    // OFFER DRAW
+    // =================================
+
+    socket.on(
+        "game:offer-draw",
+        callback => {
+
+            if (
+                typeof callback !== "function"
+            ) {
+                return;
+            }
+
+            const room = getPlayerRoom(socket);
+
+            if (!room || !room.black) {
+                return callback({
+                    ok: false,
+                    error: "No active multiplayer match"
+                });
+            }
+
+            updateClockAndPublishTimeout(room);
+
+            if (isRoomGameOver(room)) {
+                return callback({
+                    ok: false,
+                    error: "Match already finished"
+                });
+            }
+
+            if (room.pendingDrawOffer) {
+                return callback({
+                    ok: false,
+                    error: "A draw offer is already pending"
+                });
+            }
+
+            const playerColor =
+                socket.data.color;
+
+            room.pendingDrawOffer =
+                playerColor;
+
+            const opponentId =
+                playerColor === "w"
+                    ? room.black
+                    : room.white;
+
+            // Notify opponent
+            io.to(opponentId).emit(
+                "game:draw-offered",
+                {
+                    roomCode: room.code,
+                    from: playerColor
+                }
+            );
+
+            console.log(
+                `Room ${room.code}: ` +
+                `Draw offered by ${playerColor}`
+            );
+
+            callback({
+                ok: true,
+                message: "Draw offer sent"
             });
         }
+    );
 
-        // Deduct time before validating move
-        updateClockAndPublishTimeout(room);
+    // =================================
+    // ACCEPT / DECLINE DRAW
+    // =================================
 
-        if (room.timedOutColor || room.game.isGameOver()) {
-            return callback({
-                ok: false,
-                error: "Game already finished"
-            });
-        }
+    socket.on(
+        "game:respond-draw",
+        (accept, callback) => {
 
-        if (room.game.turn() !== socket.data.color) {
-            return callback({
-                ok: false,
-                error: "Not your turn"
-            });
-        }
+            if (
+                typeof callback !== "function"
+            ) {
+                return;
+            }
 
-        if (
-            !data ||
-            typeof data !== "object" ||
-            typeof data.from !== "string" ||
-            typeof data.to !== "string" ||
-            !SQUARE_RE.test(data.from) ||
-            !SQUARE_RE.test(data.to)
-        ) {
-            return callback({
-                ok: false,
-                error: "Invalid move format"
-            });
-        }
+            const room = getPlayerRoom(socket);
 
-        const promotion = data.promotion || "q";
+            if (!room || !room.black) {
+                return callback({
+                    ok: false,
+                    error: "No active multiplayer match"
+                });
+            }
 
-        if (!["q", "r", "b", "n"].includes(promotion)) {
-            return callback({
-                ok: false,
-                error: "Invalid promotion"
-            });
-        }
+            if (
+                typeof accept !== "boolean"
+            ) {
+                return callback({
+                    ok: false,
+                    error: "Invalid draw response"
+                });
+            }
 
-        try {
-            const move = room.game.move({
-                from: data.from,
-                to: data.to,
-                promotion
-            });
+            updateClockAndPublishTimeout(room);
 
-            // Switch to next player's clock
-            if (room.game.isGameOver()) {
+            if (isRoomGameOver(room)) {
+                resolvePendingDraw(
+                    room,
+                    "game-over"
+                );
+
+                return callback({
+                    ok: false,
+                    error: "Match already finished"
+                });
+            }
+
+            if (!room.pendingDrawOffer) {
+                return callback({
+                    ok: false,
+                    error: "No pending draw offer"
+                });
+            }
+
+            // Cannot accept own offer
+            if (
+                room.pendingDrawOffer ===
+                socket.data.color
+            ) {
+                return callback({
+                    ok: false,
+                    error: "Cannot respond to your own offer"
+                });
+            }
+
+            room.pendingDrawOffer = null;
+
+            if (accept) {
+                room.drawAgreed = true;
+
+                // Stop both chess clocks
                 room.clock.activeColor = null;
                 room.clock.lastUpdatedAt = null;
 
-            } else {
-                room.clock.activeColor = room.game.turn();
-                room.clock.lastUpdatedAt = Date.now();
+                publishRoomGame(room);
             }
 
+            io.to(room.code).emit(
+                "game:draw-resolved",
+                {
+                    roomCode: room.code,
+                    accepted: accept,
+                    reason: accept
+                        ? "accepted"
+                        : "declined"
+                }
+            );
+
             console.log(
-                `Room ${room.code}: ${move.san}`
+                `Room ${room.code}: Draw ` +
+                `${accept ? "accepted" : "declined"}`
+            );
+
+            callback({
+                ok: true,
+                accepted: accept,
+                game: getRoomGameState(room)
+            });
+        }
+    );
+
+    // =================================
+    // RESIGN MATCH
+    // =================================
+
+    socket.on(
+        "game:resign",
+        callback => {
+
+            if (
+                typeof callback !== "function"
+            ) {
+                return;
+            }
+
+            const room = getPlayerRoom(socket);
+
+            if (!room || !room.black) {
+                return callback({
+                    ok: false,
+                    error: "No active multiplayer match"
+                });
+            }
+
+            updateClockAndPublishTimeout(room);
+
+            if (isRoomGameOver(room)) {
+                return callback({
+                    ok: false,
+                    error: "Match already finished"
+                });
+            }
+
+            room.resignedColor =
+                socket.data.color;
+
+            resolvePendingDraw(
+                room,
+                "game-over"
+            );
+
+            // Stop timers
+            room.clock.activeColor = null;
+            room.clock.lastUpdatedAt = null;
+
+            const playerName =
+                room.resignedColor === "w"
+                    ? "White"
+                    : "Black";
+
+            console.log(
+                `Room ${room.code}: ` +
+                `${playerName} resigned`
             );
 
             publishRoomGame(room);
 
             callback({
                 ok: true,
-                move: move.san,
                 game: getRoomGameState(room)
             });
-
-        } catch {
-            callback({
-                ok: false,
-                error: "Illegal chess move"
-            });
         }
-    });
+    );
 
-    // ---------------------------------
+    // =================================
     // PLAYER DISCONNECT
-    // ---------------------------------
+    // =================================
 
     socket.on("disconnect", () => {
-        console.log("Player Disconnected:", socket.id);
+        console.log(
+            "Player Disconnected:",
+            socket.id
+        );
 
         const code = socket.data.roomCode;
+
         const room = code && rooms.get(code);
 
         if (!room) return;
 
-        const otherId = room.white === socket.id
-            ? room.black
-            : room.white;
+        const otherId =
+            room.white === socket.id
+                ? room.black
+                : room.white;
 
-        const otherSocket = otherId
-            ? io.sockets.sockets.get(otherId)
-            : null;
+        const otherSocket =
+            otherId
+                ? io.sockets.sockets.get(otherId)
+                : null;
 
         if (otherSocket) {
             otherSocket.data.roomCode = null;
@@ -668,33 +1079,44 @@ io.on("connection", socket => {
 
             otherSocket.leave(code);
 
-            otherSocket.emit("room:closed", {
-                message:
-                    "Other player disconnected. Room closed."
-            });
+            otherSocket.emit(
+                "room:closed",
+                {
+                    message:
+                        "Other player disconnected. Room closed."
+                }
+            );
         }
 
         rooms.delete(code);
 
-        console.log("Room Closed:", code);
+        console.log(
+            "Room Closed:",
+            code
+        );
     });
 });
 
 // =====================================
-// CLOCK BROADCAST EVERY SECOND
+// CLOCK UPDATE EVERY SECOND
 // =====================================
 
 setInterval(() => {
     for (const room of rooms.values()) {
 
-        if (!room.black) continue;
+        if (!room.black) {
+            continue;
+        }
 
         updateClockAndPublishTimeout(room);
 
-        io.to(room.code).emit("room:clock", {
-            roomCode: room.code,
-            clock: getClockState(room)
-        });
+        io.to(room.code).emit(
+            "room:clock",
+            {
+                roomCode: room.code,
+                clock: getClockState(room)
+            }
+        );
     }
 }, 1000);
 
@@ -707,6 +1129,11 @@ httpServer.listen(PORT, () => {
         `ChessArena running at http://localhost:${PORT}`
     );
 
-    console.log("Socket.IO Server is Ready!");
-    console.log("Chess Clock Server is Ready!");
+    console.log(
+        "Socket.IO Server is Ready!"
+    );
+
+    console.log(
+        "Chess Clock Server is Ready!"
+    );
 });

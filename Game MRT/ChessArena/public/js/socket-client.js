@@ -416,49 +416,69 @@
     // UPDATE ROOM STATE
     // =====================================
 
-    function updateRoomState(state) {
-        if (
-            !currentRoom ||
-            !state ||
-            state.roomCode !== currentRoom.code
-        ) {
-            return;
-        }
+function updateRoomState(state) {
 
-        clientRoomReady = Boolean(state.ready);
-
-        const color =
-            currentRoom.color === "w"
-                ? "White"
-                : "Black";
-
-        // Always show the Room Code
-        showCode(currentRoom.code);
-
-        roomDetails.textContent =
-            `Room: ${currentRoom.code} | ` +
-            `You: ${color} | ` +
-            `Players: ${state.playerCount}/2`;
-
-        syncGame(state.game, true);
-
-        if (clientRoomReady) {
-            if (!state.game?.clock) {
-                showMessage(
-                    "Game ready, but server chess clock is missing.",
-                    true
-                );
-            } else {
-                showMessage(
-                    "Both players joined! Game is ready."
-                );
-            }
-        } else {
-            showMessage(
-                "Room created! Share the code with Player 2."
-            );
-        }
+    if (
+        !currentRoom ||
+        !state ||
+        state.roomCode !== currentRoom.code
+    ) {
+        return;
     }
+
+    // Update room readiness
+    clientRoomReady = Boolean(state.ready);
+
+    const color =
+        currentRoom.color === "w"
+            ? "White"
+            : "Black";
+
+    // Show Room Code
+    showCode(currentRoom.code);
+
+    // Show players
+    roomDetails.textContent =
+        `Room: ${currentRoom.code} | ` +
+        `You: ${color} | ` +
+        `Players: ${state.playerCount}/2`;
+
+    // Sync chess board and timer
+    syncGame(state.game, true);
+
+    if (clientRoomReady) {
+
+        showMessage(
+            "Both players joined! Game is ready."
+        );
+
+    } else {
+
+        showMessage(
+            "Waiting for second player..."
+        );
+    }
+
+    // =====================================
+    // FIX: UPDATE OFFER DRAW BUTTON
+    // =====================================
+
+    if (typeof updateDrawUI === "function") {
+
+        drawMatchFinished =
+            Boolean(state.game?.gameOver);
+
+        updateDrawUI();
+
+        console.log(
+            "DRAW UI UPDATED:",
+            {
+                roomReady: clientRoomReady,
+                gameOver: drawMatchFinished
+            }
+        );
+    }
+}
 
     // =====================================
     // RECOVER LATEST GAME STATE
@@ -704,10 +724,46 @@
     // CREATE ROOM BUTTON
     // =====================================
 
+    
+    // =====================================
+    // GAME TIME SELECTION
+    // =====================================
+
+    const timeSelect =
+        document.createElement("select");
+
+    timeSelect.id = "gameMinutes";
+
+    timeSelect.innerHTML = `
+        <option value="5">5 Minutes</option>
+        <option value="10">10 Minutes</option>
+    `;
+
+    timeSelect.style.cssText = `
+        padding: 12px;
+        background: #1e293b;
+        color: white;
+        border: 2px solid #38bdf8;
+        border-radius: 8px;
+        font-size: 15px;
+        cursor: pointer;
+    `;
+
+    // Show selection before Create Room button
+    createBtn.parentNode.insertBefore(
+        timeSelect,
+        createBtn
+    );
+
+    // =====================================
+    // CREATE ROOM BUTTON
+    // =====================================
+
     createBtn.addEventListener("click", () => {
+
         if (!socket.connected) {
             showMessage(
-                "Socket not connected. Start the server first.",
+                "Socket not connected!",
                 true
             );
             return;
@@ -717,17 +773,26 @@
             return;
         }
 
+        const selectedMinutes =
+            Number(timeSelect.value);
+
         waitingForResponse = true;
 
         updateButtons();
 
-        showMessage("Creating room...");
+        showMessage(
+            `Creating ${selectedMinutes}-minute room...`
+        );
 
         socket.timeout(5000).emit(
             "room:create",
+            {
+                minutes: selectedMinutes
+            },
             handleRoomResponse
         );
     });
+
 
     // =====================================
     // JOIN ROOM BUTTON
@@ -771,6 +836,410 @@
     // =====================================
     // INITIALIZE
     // =====================================
+
+     
+    // =====================================
+    // STEP 8.3B - DRAW OFFER UI
+    // =====================================
+
+    const offerDrawBtn =
+        document.createElement("button");
+
+    offerDrawBtn.id = "offerDrawBtn";
+    offerDrawBtn.type = "button";
+    offerDrawBtn.textContent = "🤝 Offer Draw";
+
+    offerDrawBtn.style.cssText = `
+        display: none;
+        margin: 12px auto;
+        padding: 12px 24px;
+        background: #2563eb;
+        color: #ffffff;
+        border: none;
+        border-radius: 8px;
+        font-size: 16px;
+        font-weight: bold;
+        cursor: pointer;
+    `;
+
+    // Panel for incoming draw offer
+    const drawOfferPanel =
+        document.createElement("div");
+
+    drawOfferPanel.id = "drawOfferPanel";
+
+    drawOfferPanel.style.cssText = `
+        display: none;
+        margin: 15px auto;
+        max-width: 420px;
+        padding: 18px;
+        background: #1e293b;
+        border: 2px solid #38bdf8;
+        border-radius: 12px;
+        text-align: center;
+        color: #ffffff;
+    `;
+
+    const drawOfferText =
+        document.createElement("p");
+
+    drawOfferText.textContent =
+        "Your opponent has offered a draw.";
+
+    const acceptDrawBtn =
+        document.createElement("button");
+
+    acceptDrawBtn.type = "button";
+    acceptDrawBtn.textContent = "Accept Draw";
+
+    acceptDrawBtn.style.cssText = `
+        padding: 10px 16px;
+        margin: 5px;
+        background: #16a34a;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+    `;
+
+    const declineDrawBtn =
+        document.createElement("button");
+
+    declineDrawBtn.type = "button";
+    declineDrawBtn.textContent = "Decline Draw";
+
+    declineDrawBtn.style.cssText = `
+        padding: 10px 16px;
+        margin: 5px;
+        background: #dc2626;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+    `;
+
+    drawOfferPanel.append(
+        drawOfferText,
+        acceptDrawBtn,
+        declineDrawBtn
+    );
+
+    // Display draw-related messages
+    const drawNotice =
+        document.createElement("p");
+
+    drawNotice.id = "drawNotice";
+
+    drawNotice.style.cssText = `
+        display: none;
+        text-align: center;
+        margin: 10px auto;
+        color: #38bdf8;
+    `;
+
+    gameInfo.append(
+        offerDrawBtn,
+        drawOfferPanel,
+        drawNotice
+    );
+
+    // Draw UI state
+    let drawMatchFinished = false;
+    let incomingDrawOffer = false;
+    let outgoingDrawOffer = false;
+    let drawRequestBusy = false;
+
+    function showDrawNotice(
+        message,
+        isError = false
+    ) {
+        drawNotice.textContent = message;
+
+        drawNotice.style.display =
+            message ? "block" : "none";
+
+        drawNotice.style.color = isError
+            ? "#f87171"
+            : "#38bdf8";
+    }
+
+    function updateDrawUI() {
+        const activeMatch = Boolean(
+            currentRoom &&
+            clientRoomReady &&
+            socket.connected &&
+            !drawMatchFinished
+        );
+
+        offerDrawBtn.style.display =
+            activeMatch ? "block" : "none";
+
+        offerDrawBtn.disabled =
+            !activeMatch ||
+            incomingDrawOffer ||
+            outgoingDrawOffer ||
+            drawRequestBusy;
+
+        drawOfferPanel.style.display =
+            activeMatch && incomingDrawOffer
+                ? "block"
+                : "none";
+
+        acceptDrawBtn.disabled = drawRequestBusy;
+        declineDrawBtn.disabled = drawRequestBusy;
+
+        if (!activeMatch) {
+            drawOfferPanel.style.display = "none";
+        }
+    }
+
+    function resetDrawUI() {
+        drawMatchFinished = false;
+        incomingDrawOffer = false;
+        outgoingDrawOffer = false;
+        drawRequestBusy = false;
+
+        showDrawNotice("");
+        updateDrawUI();
+    }
+
+    // =====================================
+    // OFFER DRAW BUTTON
+    // =====================================
+
+    offerDrawBtn.addEventListener(
+        "click",
+        () => {
+            if (
+                !currentRoom ||
+                !clientRoomReady ||
+                drawMatchFinished ||
+                incomingDrawOffer ||
+                outgoingDrawOffer ||
+                drawRequestBusy
+            ) {
+                return;
+            }
+
+            drawRequestBusy = true;
+            updateDrawUI();
+
+            socket.timeout(5000).emit(
+                "game:offer-draw",
+                (error, response) => {
+                    drawRequestBusy = false;
+
+                    if (error || !response?.ok) {
+                        showDrawNotice(
+                            error
+                                ? "Draw request timed out."
+                                : (
+                                    response?.error ||
+                                    "Could not offer draw."
+                                ),
+                            true
+                        );
+
+                        updateDrawUI();
+                        return;
+                    }
+
+                    outgoingDrawOffer = true;
+
+                    showDrawNotice(
+                        "Draw offer sent. Waiting for opponent."
+                    );
+
+                    updateDrawUI();
+                }
+            );
+        }
+    );
+
+    // =====================================
+    // RECEIVE DRAW OFFER
+    // =====================================
+
+    socket.on("game:draw-offered", data => {
+        if (
+            !currentRoom ||
+            data?.roomCode !== currentRoom.code ||
+            data.from === currentRoom.color ||
+            drawMatchFinished
+        ) {
+            return;
+        }
+
+        incomingDrawOffer = true;
+
+        const playerName =
+            data.from === "w" ? "White" : "Black";
+
+        drawOfferText.textContent =
+            `${playerName} Player offered a draw.`;
+
+        showDrawNotice(
+            "Your opponent is requesting a draw."
+        );
+
+        updateDrawUI();
+    });
+
+    // =====================================
+    // ACCEPT / DECLINE DRAW
+    // =====================================
+
+    function respondToDraw(accept) {
+        if (
+            !currentRoom ||
+            !incomingDrawOffer ||
+            drawRequestBusy ||
+            drawMatchFinished
+        ) {
+            return;
+        }
+
+        drawRequestBusy = true;
+        updateDrawUI();
+
+        socket.timeout(5000).emit(
+            "game:respond-draw",
+            accept,
+            (error, response) => {
+                drawRequestBusy = false;
+
+                if (error || !response?.ok) {
+                    showDrawNotice(
+                        error
+                            ? "Draw response timed out."
+                            : (
+                                response?.error ||
+                                "Could not respond to draw."
+                            ),
+                        true
+                    );
+
+                    updateDrawUI();
+                    return;
+                }
+
+                incomingDrawOffer = false;
+
+                if (response.game?.gameOver) {
+                    drawMatchFinished = true;
+
+                    window.ChessArenaGame.syncRoom(
+                        response.game,
+                        clientRoomReady
+                    );
+                }
+
+                updateDrawUI();
+            }
+        );
+    }
+
+    acceptDrawBtn.addEventListener(
+        "click",
+        () => respondToDraw(true)
+    );
+
+    declineDrawBtn.addEventListener(
+        "click",
+        () => respondToDraw(false)
+    );
+
+    // =====================================
+    // DRAW OFFER RESOLVED
+    // =====================================
+
+    socket.on("game:draw-resolved", data => {
+        if (
+            !currentRoom ||
+            data?.roomCode !== currentRoom.code
+        ) {
+            return;
+        }
+
+        incomingDrawOffer = false;
+        outgoingDrawOffer = false;
+
+        if (data.accepted) {
+            drawMatchFinished = true;
+
+            showDrawNotice(
+                "Draw accepted. Match finished."
+            );
+
+        } else if (data.reason === "declined") {
+            showDrawNotice(
+                "Draw offer declined. Match continues."
+            );
+
+        } else if (data.reason === "move") {
+            showDrawNotice(
+                "Draw offer cancelled after a move."
+            );
+
+        } else {
+            showDrawNotice(
+                "Draw offer cancelled."
+            );
+        }
+
+        updateDrawUI();
+    });
+
+    // =====================================
+    // KEEP DRAW BUTTON IN SYNC
+    // =====================================
+
+    socket.on("room:state", state => {
+        if (
+            !currentRoom ||
+            state?.roomCode !== currentRoom.code
+        ) {
+            return;
+        }
+
+        drawMatchFinished =
+            Boolean(state.game?.gameOver);
+
+        updateDrawUI();
+    });
+
+    socket.on("room:game", game => {
+        if (!currentRoom) return;
+
+        drawMatchFinished =
+            Boolean(game?.gameOver);
+
+        if (drawMatchFinished) {
+            incomingDrawOffer = false;
+            outgoingDrawOffer = false;
+        }
+
+        updateDrawUI();
+    });
+
+    socket.on("room:clock", data => {
+        if (
+            !currentRoom ||
+            data?.roomCode !== currentRoom.code
+        ) {
+            return;
+        }
+
+        if (data.clock?.timedOutColor) {
+            drawMatchFinished = true;
+            updateDrawUI();
+        }
+    });
+
+    socket.on("room:closed", resetDrawUI);
+    socket.on("disconnect", resetDrawUI);
+
+
 
     updateButtons();
 
