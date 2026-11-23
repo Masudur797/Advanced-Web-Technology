@@ -1,250 +1,781 @@
 
-const socket = io();
+/* =========================================
+   ChessArena - Socket.IO Client
+   Room Code + Multiplayer + Live Timer
+========================================= */
 
-// Allow app.js to send socket requests
-window.chessArenaSocket = socket;
+(() => {
+    "use strict";
 
-// Room UI
-const createRoomBtn =
-    document.getElementById("createRoomBtn");
+    // Socket.IO connection
+    const socket = io();
 
-const joinRoomBtn =
-    document.getElementById("joinRoomBtn");
+    // Share socket with app.js
+    window.chessArenaSocket = socket;
 
-const roomCodeInput =
-    document.getElementById("roomCodeInput");
+    // =====================================
+    // HTML ELEMENTS
+    // =====================================
 
-const roomStatus =
-    document.getElementById("roomStatus");
+    const createBtn =
+        document.getElementById("createRoomBtn");
 
-const roomDetails =
-    document.getElementById("roomDetails");
+    const joinBtn =
+        document.getElementById("joinRoomBtn");
 
-// Connection status
-const connectionStatus = document.createElement("p");
+    const codeInput =
+        document.getElementById("roomCodeInput");
 
-connectionStatus.id = "connectionStatus";
-connectionStatus.textContent = "Socket: Connecting...";
+    const roomStatus =
+        document.getElementById("roomStatus");
 
-connectionStatus.style.marginTop = "15px";
+    const roomDetails =
+        document.getElementById("roomDetails");
 
-document.querySelector(".game-info")
-    .appendChild(connectionStatus);
+    const gameInfo =
+        document.querySelector(".game-info");
 
-// Multiplayer room information
-let currentRoom = null;
-let waitingForRoomResponse = false;
+    const whiteTime =
+        document.getElementById("whiteTime");
 
-// Display room messages
-function showRoomMessage(message, isError = false) {
-    roomStatus.textContent = message;
+    const blackTime =
+        document.getElementById("blackTime");
 
-    roomStatus.style.color = isError
-        ? "#f87171"
-        : "#22c55e";
-}
+    const whiteClock =
+        document.getElementById("whiteClock");
 
-// Update buttons
-function updateControls() {
-    const canChooseRoom =
-        socket.connected &&
-        !currentRoom &&
-        !waitingForRoomResponse;
+    const blackClock =
+        document.getElementById("blackClock");
 
-    createRoomBtn.disabled = !canChooseRoom;
-    joinRoomBtn.disabled = !canChooseRoom;
-    roomCodeInput.disabled = !canChooseRoom;
-}
-
-// Clear room when connection is lost
-function clearRoom(message) {
-    currentRoom = null;
-    waitingForRoomResponse = false;
-
-    roomDetails.textContent = "Not in a room";
-
-    window.ChessArenaGame.leaveRoom();
-
-    showRoomMessage(message, true);
-    updateControls();
-}
-
-// Update room details
-function updateRoomState(state) {
-    if (!currentRoom) return;
-
-    if (currentRoom.code !== state.roomCode) {
+    // Validate required elements
+    if (
+        !createBtn ||
+        !joinBtn ||
+        !codeInput ||
+        !roomStatus ||
+        !roomDetails ||
+        !gameInfo ||
+        !window.ChessArenaGame
+    ) {
+        console.error(
+            "ChessArena: HTML elements or app.js missing."
+        );
         return;
     }
 
-    const color = currentRoom.color === "w"
-        ? "White"
-        : "Black";
+    // =====================================
+    // ROOM CODE DISPLAY
+    // =====================================
 
-    roomDetails.textContent =
-        `Room: ${state.roomCode} | ` +
-        `You: ${color} | ` +
-        `Players: ${state.playerCount}/2`;
+    const codePanel = document.createElement("div");
 
-    // Synchronize the room's chess state
-    window.ChessArenaGame.syncRoom(
-        state.game,
-        state.ready
+    codePanel.id = "roomCodePanel";
+
+    codePanel.style.cssText = `
+        display: none;
+        margin: 16px auto;
+        padding: 16px;
+        max-width: 440px;
+        border: 2px solid #38bdf8;
+        border-radius: 12px;
+        background: #0f172a;
+        color: #ffffff;
+        text-align: center;
+    `;
+
+    const codeHeading = document.createElement("div");
+
+    codeHeading.textContent =
+        "ROOM CODE (JOIN PASSWORD)";
+
+    codeHeading.style.cssText = `
+        font-size: 13px;
+        letter-spacing: 1px;
+        color: #7dd3fc;
+    `;
+
+    const codeValue = document.createElement("div");
+
+    codeValue.id = "visibleRoomCode";
+
+    codeValue.style.cssText = `
+        font-size: 34px;
+        font-weight: 800;
+        letter-spacing: 5px;
+        margin: 10px 0;
+        overflow-wrap: anywhere;
+    `;
+
+    const copyBtn = document.createElement("button");
+
+    copyBtn.type = "button";
+    copyBtn.textContent = "Copy Room Code";
+
+    copyBtn.style.cssText = `
+        padding: 9px 16px;
+        background: #38bdf8;
+        color: #0f172a;
+        border: none;
+        border-radius: 8px;
+        font-weight: bold;
+        cursor: pointer;
+    `;
+
+    codePanel.append(
+        codeHeading,
+        codeValue,
+        copyBtn
     );
 
-    if (state.ready) {
-        showRoomMessage(
-            "Both players joined! Game is ready."
-        );
-    } else {
-        showRoomMessage(
-            "Waiting for second player..."
-        );
-    }
-}
-
-// Handle Create Room / Join Room response
-function handleRoomResponse(error, response) {
-    waitingForRoomResponse = false;
-
-    if (!socket.connected) {
-        clearRoom("Connection lost. Please reconnect.");
-        return;
-    }
-
-    if (error || !response || !response.ok) {
-        const message = error
-            ? "Server response timeout"
-            : response?.error || "Request failed";
-
-        showRoomMessage(message, true);
-        updateControls();
-        return;
-    }
-
-    currentRoom = {
-        code: response.roomCode,
-        color: response.color
-    };
-
-    // Switch local chess board into online mode
-    window.ChessArenaGame.enterRoom(
-        response.state.game,
-        response.color,
-        response.state.ready
+    roomStatus.parentNode.insertBefore(
+        codePanel,
+        roomStatus
     );
 
-    updateRoomState(response.state);
-    updateControls();
-}
+    // =====================================
+    // SOCKET CONNECTION STATUS
+    // =====================================
 
-// Socket Connected
-socket.on("connect", () => {
-    console.log("Socket Connected:", socket.id);
+    const connectionStatus =
+        document.createElement("p");
+
+    connectionStatus.id = "connectionStatus";
 
     connectionStatus.textContent =
-        "🟢 Socket Connected";
+        "Socket: Connecting...";
 
-    connectionStatus.style.color = "#22c55e";
+    connectionStatus.style.marginTop = "15px";
 
-    if (currentRoom) {
+    gameInfo.appendChild(connectionStatus);
+
+    // =====================================
+    // MULTIPLAYER VARIABLES
+    // =====================================
+
+    let currentRoom = null;
+    let waitingForResponse = false;
+
+    // Separate from app.js roomReady variable
+    let clientRoomReady = false;
+
+    let lastFen = null;
+    let lastStatus = null;
+    let lastGameOver = null;
+
+    let recoveryInterval = null;
+
+    // =====================================
+    // ROOM MESSAGE
+    // =====================================
+
+    function showMessage(message, error = false) {
+        roomStatus.textContent = message;
+
+        roomStatus.style.color = error
+            ? "#f87171"
+            : "#22c55e";
+    }
+
+    // =====================================
+    // UPDATE BUTTONS
+    // =====================================
+
+    function updateButtons() {
+        const enabled =
+            socket.connected &&
+            !currentRoom &&
+            !waitingForResponse;
+
+        createBtn.disabled = !enabled;
+        joinBtn.disabled = !enabled;
+        codeInput.disabled = !enabled;
+    }
+
+    // =====================================
+    // SHOW ROOM CODE
+    // =====================================
+
+    function showCode(code) {
+        codeValue.textContent = code;
+
+        codePanel.style.display = "block";
+
+        copyBtn.textContent = "Copy Room Code";
+    }
+
+    // =====================================
+    // COPY ROOM CODE
+    // =====================================
+
+    copyBtn.addEventListener("click", async () => {
+        if (!currentRoom) return;
+
+        try {
+            await navigator.clipboard.writeText(
+                currentRoom.code
+            );
+
+            copyBtn.textContent = "Copied!";
+
+        } catch (error) {
+            copyBtn.textContent =
+                "Select and copy the code above";
+
+            console.warn(
+                "Clipboard unavailable:",
+                error
+            );
+        }
+    });
+
+    // =====================================
+    // CHESS TIMER FORMAT
+    // =====================================
+
+    function formatTime(milliseconds) {
+        const totalSeconds = Math.ceil(
+            Math.max(0, milliseconds) / 1000
+        );
+
+        const minutes =
+            Math.floor(totalSeconds / 60);
+
+        const seconds =
+            totalSeconds % 60;
+
+        return (
+            String(minutes).padStart(2, "0") +
+            ":" +
+            String(seconds).padStart(2, "0")
+        );
+    }
+
+    // =====================================
+    // UPDATE LIVE TIMER
+    // =====================================
+
+    function updateClock(clock) {
+        if (
+            !clock ||
+            !Number.isFinite(clock.whiteMs) ||
+            !Number.isFinite(clock.blackMs)
+        ) {
+            return;
+        }
+
+        // White timer
+        if (whiteTime) {
+            whiteTime.textContent =
+                formatTime(clock.whiteMs);
+
+            whiteTime.classList.toggle(
+                "low-time",
+                clock.whiteMs <= 30000
+            );
+        }
+
+        // Black timer
+        if (blackTime) {
+            blackTime.textContent =
+                formatTime(clock.blackMs);
+
+            blackTime.classList.toggle(
+                "low-time",
+                clock.blackMs <= 30000
+            );
+        }
+
+        // Highlight active player
+        if (whiteClock) {
+            whiteClock.classList.toggle(
+                "active",
+                Boolean(
+                    clock.running &&
+                    clock.activeColor === "w"
+                )
+            );
+        }
+
+        if (blackClock) {
+            blackClock.classList.toggle(
+                "active",
+                Boolean(
+                    clock.running &&
+                    clock.activeColor === "b"
+                )
+            );
+        }
+    }
+
+    // =====================================
+    // RESET TIMER
+    // =====================================
+
+    function resetClock() {
+        if (whiteTime) {
+            whiteTime.textContent = "05:00";
+            whiteTime.classList.remove("low-time");
+        }
+
+        if (blackTime) {
+            blackTime.textContent = "05:00";
+            blackTime.classList.remove("low-time");
+        }
+
+        if (whiteClock) {
+            whiteClock.classList.remove("active");
+        }
+
+        if (blackClock) {
+            blackClock.classList.remove("active");
+        }
+    }
+
+    // =====================================
+    // STOP AUTOMATIC RECOVERY
+    // =====================================
+
+    function stopRecovery() {
+        if (recoveryInterval !== null) {
+            clearInterval(recoveryInterval);
+            recoveryInterval = null;
+        }
+    }
+
+    // =====================================
+    // CLEAR ROOM
+    // =====================================
+
+    function clearRoom(message) {
+        stopRecovery();
+
+        currentRoom = null;
+        waitingForResponse = false;
+        clientRoomReady = false;
+
+        lastFen = null;
+        lastStatus = null;
+        lastGameOver = null;
+
+        codePanel.style.display = "none";
+        codeValue.textContent = "";
+
+        roomDetails.textContent = "Not in a room";
+
+        resetClock();
+
+        window.ChessArenaGame.leaveRoom();
+
+        showMessage(message, true);
+
+        updateButtons();
+    }
+
+    // =====================================
+    // SYNC CHESS GAME
+    // =====================================
+
+    function syncGame(game, force = false) {
+        if (
+            !currentRoom ||
+            !game ||
+            typeof game.fen !== "string"
+        ) {
+            return;
+        }
+
+        // Update timer even if board is unchanged
+        updateClock(game.clock);
+
+        // Avoid unnecessary board rendering
+        if (
+            !force &&
+            game.fen === lastFen &&
+            game.status === lastStatus &&
+            game.gameOver === lastGameOver
+        ) {
+            return;
+        }
+
+        window.ChessArenaGame.syncRoom(
+            game,
+            clientRoomReady
+        );
+
+        lastFen = game.fen;
+        lastStatus = game.status;
+        lastGameOver = game.gameOver;
+
+        console.log(
+            "Chess Board Updated:",
+            game.fen
+        );
+    }
+
+    // =====================================
+    // UPDATE ROOM STATE
+    // =====================================
+
+    function updateRoomState(state) {
+        if (
+            !currentRoom ||
+            !state ||
+            state.roomCode !== currentRoom.code
+        ) {
+            return;
+        }
+
+        clientRoomReady = Boolean(state.ready);
+
+        const color =
+            currentRoom.color === "w"
+                ? "White"
+                : "Black";
+
+        // Always show the Room Code
+        showCode(currentRoom.code);
+
+        roomDetails.textContent =
+            `Room: ${currentRoom.code} | ` +
+            `You: ${color} | ` +
+            `Players: ${state.playerCount}/2`;
+
+        syncGame(state.game, true);
+
+        if (clientRoomReady) {
+            if (!state.game?.clock) {
+                showMessage(
+                    "Game ready, but server chess clock is missing.",
+                    true
+                );
+            } else {
+                showMessage(
+                    "Both players joined! Game is ready."
+                );
+            }
+        } else {
+            showMessage(
+                "Room created! Share the code with Player 2."
+            );
+        }
+    }
+
+    // =====================================
+    // RECOVER LATEST GAME STATE
+    // =====================================
+
+    function requestLatestGame() {
+        if (
+            !socket.connected ||
+            !currentRoom ||
+            !clientRoomReady
+        ) {
+            return;
+        }
+
+        const requestedCode = currentRoom.code;
+
+        socket.timeout(5000).emit(
+            "game:state",
+            (error, response) => {
+                if (
+                    error ||
+                    !response?.ok ||
+                    !response.game
+                ) {
+                    return;
+                }
+
+                if (
+                    !currentRoom ||
+                    currentRoom.code !== requestedCode
+                ) {
+                    return;
+                }
+
+                syncGame(response.game);
+            }
+        );
+    }
+
+    // =====================================
+    // CREATE / JOIN ROOM RESPONSE
+    // =====================================
+
+    function handleRoomResponse(error, response) {
+        waitingForResponse = false;
+
+        console.log(
+            "ROOM CREATE/JOIN RESPONSE:",
+            error || response
+        );
+
+        if (!socket.connected) {
+            showMessage(
+                "Socket disconnected. Reconnect and try again.",
+                true
+            );
+
+            updateButtons();
+            return;
+        }
+
+        if (error || !response?.ok) {
+            showMessage(
+                error
+                    ? "Server response timeout. Check Terminal."
+                    : (
+                        response?.error ||
+                        "Room request failed"
+                    ),
+                true
+            );
+
+            updateButtons();
+            return;
+        }
+
+        if (
+            typeof response.roomCode !== "string" ||
+            !response.state?.game
+        ) {
+            showMessage(
+                "Server returned invalid Room Code or Game State.",
+                true
+            );
+
+            updateButtons();
+            return;
+        }
+
+        currentRoom = {
+            code: response.roomCode,
+            color: response.color
+        };
+
+        clientRoomReady =
+            Boolean(response.state.ready);
+
+        // Show code immediately
+        showCode(currentRoom.code);
+
+        showMessage(
+            `Room Code: ${currentRoom.code}`
+        );
+
+        try {
+            window.ChessArenaGame.enterRoom(
+                response.state.game,
+                response.color,
+                clientRoomReady
+            );
+
+            updateRoomState(response.state);
+
+        } catch (error) {
+            console.error(
+                "Room UI Error:",
+                error
+            );
+
+            showMessage(
+                `Room ${currentRoom.code} created. ` +
+                `UI Error: ${error.message}`,
+                true
+            );
+        }
+
+        // Automatic recovery every 2 seconds
+        stopRecovery();
+
+        recoveryInterval = setInterval(
+            requestLatestGame,
+            2000
+        );
+
+        updateButtons();
+    }
+
+    // =====================================
+    // SOCKET CONNECTED
+    // =====================================
+
+    socket.on("connect", () => {
+        connectionStatus.textContent =
+            "🟢 Socket Connected";
+
+        connectionStatus.style.color = "#22c55e";
+
+        if (currentRoom) {
+            clearRoom(
+                "Reconnected. Create or join a new room."
+            );
+        }
+
+        updateButtons();
+
+        console.log(
+            "SOCKET CONNECTED:",
+            socket.id
+        );
+    });
+
+    // =====================================
+    // SOCKET DISCONNECTED
+    // =====================================
+
+    socket.on("disconnect", () => {
+        connectionStatus.textContent =
+            "🔴 Socket Disconnected";
+
+        connectionStatus.style.color = "#ef4444";
+
         clearRoom(
-            "Reconnected. Please create or join a new room."
+            "Connection lost. Room closed."
         );
-    } else {
-        updateControls();
-    }
-});
+    });
 
-// Socket Disconnected
-socket.on("disconnect", () => {
-    console.log("Socket Disconnected");
+    // =====================================
+    // SOCKET CONNECTION ERROR
+    // =====================================
 
-    connectionStatus.textContent =
-        "🔴 Socket Disconnected";
+    socket.on("connect_error", error => {
+        connectionStatus.textContent =
+            "Connection Failed";
 
-    connectionStatus.style.color = "#ef4444";
+        connectionStatus.style.color = "#ef4444";
 
-    clearRoom("Connection lost. Room closed.");
-});
-
-// Connection Error
-socket.on("connect_error", error => {
-    console.error("Socket Error:", error.message);
-
-    connectionStatus.textContent =
-        "Connection Failed";
-
-    connectionStatus.style.color = "#ef4444";
-
-    updateControls();
-});
-
-// Receive room information
-socket.on("room:state", state => {
-    updateRoomState(state);
-});
-
-// NEW: Receive real-time chess moves
-socket.on("room:game", game => {
-    if (!currentRoom) return;
-
-    console.log("Game State Updated:", game.fen);
-
-    window.ChessArenaGame.syncRoom(game, true);
-});
-
-// Room closed by server
-socket.on("room:closed", data => {
-    clearRoom(
-        data.message || "Room closed"
-    );
-});
-
-// Create Room
-createRoomBtn.addEventListener("click", () => {
-    if (!socket.connected || currentRoom) return;
-    if (waitingForRoomResponse) return;
-
-    waitingForRoomResponse = true;
-    updateControls();
-
-    showRoomMessage("Creating room...");
-
-    socket.timeout(5000).emit(
-        "room:create",
-        handleRoomResponse
-    );
-});
-
-// Join Room
-joinRoomBtn.addEventListener("click", () => {
-    if (!socket.connected || currentRoom) return;
-    if (waitingForRoomResponse) return;
-
-    const code = roomCodeInput.value
-        .trim()
-        .toUpperCase();
-
-    if (!/^[A-Z0-9]{6}$/.test(code)) {
-        showRoomMessage(
-            "Enter a valid 6-character Room Code",
-            true
+        console.error(
+            "Socket Connection Error:",
+            error.message
         );
-        return;
-    }
 
-    waitingForRoomResponse = true;
-    updateControls();
+        updateButtons();
+    });
 
-    showRoomMessage("Joining room...");
+    // =====================================
+    // ROOM STATE RECEIVER
+    // =====================================
 
-    socket.timeout(5000).emit(
-        "room:join",
-        code,
-        handleRoomResponse
+    socket.on("room:state", state => {
+        updateRoomState(state);
+    });
+
+    // =====================================
+    // REAL-TIME MOVE RECEIVER
+    // =====================================
+
+    socket.on("room:game", game => {
+        console.log(
+            "REAL-TIME MOVE RECEIVED:",
+            game?.fen
+        );
+
+        syncGame(game);
+    });
+
+    // =====================================
+    // LIVE TIMER RECEIVER
+    // =====================================
+
+    socket.on("room:clock", data => {
+        if (!currentRoom) return;
+
+        if (
+            data?.roomCode !== currentRoom.code
+        ) {
+            return;
+        }
+
+        updateClock(data.clock);
+    });
+
+    // =====================================
+    // ROOM CLOSED
+    // =====================================
+
+    socket.on("room:closed", data => {
+        clearRoom(
+            data?.message || "Room closed"
+        );
+    });
+
+    // =====================================
+    // CREATE ROOM BUTTON
+    // =====================================
+
+    createBtn.addEventListener("click", () => {
+        if (!socket.connected) {
+            showMessage(
+                "Socket not connected. Start the server first.",
+                true
+            );
+            return;
+        }
+
+        if (currentRoom || waitingForResponse) {
+            return;
+        }
+
+        waitingForResponse = true;
+
+        updateButtons();
+
+        showMessage("Creating room...");
+
+        socket.timeout(5000).emit(
+            "room:create",
+            handleRoomResponse
+        );
+    });
+
+    // =====================================
+    // JOIN ROOM BUTTON
+    // =====================================
+
+    joinBtn.addEventListener("click", () => {
+        if (
+            !socket.connected ||
+            currentRoom ||
+            waitingForResponse
+        ) {
+            return;
+        }
+
+        const code = codeInput.value
+            .trim()
+            .toUpperCase();
+
+        if (!/^[A-Z0-9]{6}$/.test(code)) {
+            showMessage(
+                "Enter a valid 6-character Room Code.",
+                true
+            );
+
+            return;
+        }
+
+        waitingForResponse = true;
+
+        updateButtons();
+
+        showMessage("Joining room...");
+
+        socket.timeout(5000).emit(
+            "room:join",
+            code,
+            handleRoomResponse
+        );
+    });
+
+    // =====================================
+    // INITIALIZE
+    // =====================================
+
+    updateButtons();
+
+    console.log(
+        "ChessArena ROOM + TIMER FIX Loaded!"
     );
-});
 
-// Disable controls until socket connects
-updateControls();
+})();

@@ -12,18 +12,20 @@ const PORT = process.env.PORT || 3000;
 const httpServer = http.createServer(app);
 const io = new Server(httpServer);
 
-// Local practice game
+// Local practice chess game
 const localGame = new Chess();
 
 // Online multiplayer rooms
 const rooms = new Map();
 
+const SQUARE_RE = /^[a-h][1-8]$/;
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// ====================================
-// CHESS GAME STATE
-// ====================================
+// =====================================
+// GAME STATE
+// =====================================
 
 function getGameState(game) {
     let status = "Game in progress";
@@ -51,9 +53,9 @@ function getGameState(game) {
     };
 }
 
-// ====================================
-// ROOM MANAGEMENT
-// ====================================
+// =====================================
+// ROOM CODE GENERATOR
+// =====================================
 
 function generateRoomCode() {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -61,16 +63,51 @@ function generateRoomCode() {
     let code;
 
     do {
-        const bytes = crypto.randomBytes(6);
-
-        code = Array.from(bytes, byte => {
-            return chars[byte % chars.length];
-        }).join("");
+        code = Array.from(
+            crypto.randomBytes(6),
+            byte => chars[byte % chars.length]
+        ).join("");
 
     } while (rooms.has(code));
 
     return code;
 }
+
+// =====================================
+// CHESS CLOCK STATE
+// =====================================
+
+function getClockState(room) {
+    return {
+        minutes: room.minutes,
+        whiteMs: room.clock.whiteMs,
+        blackMs: room.clock.blackMs,
+        activeColor: room.clock.activeColor,
+        running: Boolean(room.clock.activeColor),
+        timedOutColor: room.timedOutColor
+    };
+}
+
+// Game state with timeout information
+function getRoomGameState(room) {
+    const state = getGameState(room.game);
+
+    if (room.timedOutColor) {
+        state.gameOver = true;
+
+        state.status = room.timedOutColor === "w"
+            ? "Time out! Black wins."
+            : "Time out! White wins.";
+    }
+
+    state.clock = getClockState(room);
+
+    return state;
+}
+
+// =====================================
+// ROOM STATE
+// =====================================
 
 function getRoomState(room) {
     return {
@@ -79,18 +116,13 @@ function getRoomState(room) {
         whiteConnected: Boolean(room.white),
         blackConnected: Boolean(room.black),
         ready: Boolean(room.white && room.black),
-
-        // Each room has its own game state
-        game: getGameState(room.game)
+        game: getRoomGameState(room)
     };
 }
 
 function getPlayerRoom(socket) {
     const code = socket.data.roomCode;
-
-    if (!code) return null;
-
-    const room = rooms.get(code);
+    const room = code && rooms.get(code);
 
     if (!room) return null;
 
@@ -101,9 +133,77 @@ function getPlayerRoom(socket) {
     return isMember ? room : null;
 }
 
-// ====================================
-// EXISTING LOCAL GAME REST API
-// ====================================
+// =====================================
+// SERVER-SIDE CLOCK LOGIC
+// =====================================
+
+// Deduct actual elapsed time
+function advanceClock(room) {
+    const clock = room.clock;
+
+    if (
+        !clock.activeColor ||
+        room.timedOutColor ||
+        room.game.isGameOver()
+    ) {
+        return false;
+    }
+
+    const now = Date.now();
+
+    const elapsed = Math.max(
+        0,
+        now - clock.lastUpdatedAt
+    );
+
+    const field = clock.activeColor === "w"
+        ? "whiteMs"
+        : "blackMs";
+
+    clock[field] = Math.max(
+        0,
+        clock[field] - elapsed
+    );
+
+    clock.lastUpdatedAt = now;
+
+    // Time expired
+    if (clock[field] === 0) {
+        room.timedOutColor = clock.activeColor;
+
+        clock.activeColor = null;
+        clock.lastUpdatedAt = null;
+
+        return true;
+    }
+
+    return false;
+}
+
+// Broadcast updated chess game
+function publishRoomGame(room) {
+    io.to(room.code).emit(
+        "room:game",
+        getRoomGameState(room)
+    );
+}
+
+// Advance time and notify on timeout
+function updateClockAndPublishTimeout(room) {
+    if (advanceClock(room)) {
+        console.log(
+            "TIME OUT:",
+            room.code,
+            room.timedOutColor
+        );
+
+        publishRoomGame(room);
+    }
+}
+
+// =====================================
+// LOCAL PRACTICE REST API
+// =====================================
 
 app.get("/api/health", (req, res) => {
     res.json({
@@ -119,7 +219,7 @@ app.get("/api/game", (req, res) => {
 app.get("/api/game/legal-moves/:square", (req, res) => {
     const square = req.params.square;
 
-    if (!/^[a-h][1-8]$/.test(square)) {
+    if (!SQUARE_RE.test(square)) {
         return res.status(400).json({
             error: "Invalid square"
         });
@@ -147,8 +247,8 @@ app.post("/api/game/move", (req, res) => {
     if (
         typeof from !== "string" ||
         typeof to !== "string" ||
-        !/^[a-h][1-8]$/.test(from) ||
-        !/^[a-h][1-8]$/.test(to)
+        !SQUARE_RE.test(from) ||
+        !SQUARE_RE.test(to)
     ) {
         return res.status(400).json({
             error: "Invalid move format"
@@ -174,7 +274,7 @@ app.post("/api/game/move", (req, res) => {
             ...getGameState(localGame)
         });
 
-    } catch (error) {
+    } catch {
         res.status(400).json({
             error: "Illegal chess move"
         });
@@ -190,68 +290,106 @@ app.post("/api/game/reset", (req, res) => {
     });
 });
 
-// ====================================
-// REAL-TIME MULTIPLAYER
-// ====================================
+// =====================================
+// SOCKET.IO MULTIPLAYER
+// =====================================
 
-io.on("connection", (socket) => {
-
+io.on("connection", socket => {
     console.log("Player Connected:", socket.id);
 
-    // --------------------------------
+    // ---------------------------------
     // CREATE ROOM
-    // --------------------------------
+    // ---------------------------------
 
-    socket.on("room:create", (callback) => {
+    socket.on(
+        "room:create",
+        (optionsOrCallback, maybeCallback) => {
 
-        if (typeof callback !== "function") return;
+            const callback =
+                typeof optionsOrCallback === "function"
+                    ? optionsOrCallback
+                    : maybeCallback;
 
-        if (getPlayerRoom(socket)) {
-            return callback({
-                ok: false,
-                error: "Already in a room"
+            const options =
+                typeof optionsOrCallback === "object" &&
+                optionsOrCallback !== null
+                    ? optionsOrCallback
+                    : {};
+
+            if (typeof callback !== "function") return;
+
+            if (getPlayerRoom(socket)) {
+                return callback({
+                    ok: false,
+                    error: "Already in a room"
+                });
+            }
+
+            // Default = 5 minutes
+            const minutes = options.minutes === undefined
+                ? 5
+                : options.minutes;
+
+            if (![5, 10].includes(minutes)) {
+                return callback({
+                    ok: false,
+                    error: "Choose 5 or 10 minutes"
+                });
+            }
+
+            const code = generateRoomCode();
+            const initialMs = minutes * 60 * 1000;
+
+            const room = {
+                code,
+                white: socket.id,
+                black: null,
+
+                game: new Chess(),
+
+                minutes,
+                timedOutColor: null,
+
+                clock: {
+                    whiteMs: initialMs,
+                    blackMs: initialMs,
+                    activeColor: null,
+                    lastUpdatedAt: null
+                }
+            };
+
+            rooms.set(code, room);
+
+            socket.join(code);
+
+            socket.data.roomCode = code;
+            socket.data.color = "w";
+
+            console.log(
+                "Room Created:",
+                code,
+                `${minutes} min`
+            );
+
+            callback({
+                ok: true,
+                roomCode: code,
+                color: "w",
+                state: getRoomState(room)
             });
+
+            io.to(code).emit(
+                "room:state",
+                getRoomState(room)
+            );
         }
+    );
 
-        const code = generateRoomCode();
-
-        const room = {
-            code,
-            white: socket.id,
-            black: null,
-
-            // NEW: Separate chess game per room
-            game: new Chess()
-        };
-
-        rooms.set(code, room);
-
-        socket.join(code);
-
-        socket.data.roomCode = code;
-        socket.data.color = "w";
-
-        console.log("Room Created:", code);
-
-        callback({
-            ok: true,
-            roomCode: code,
-            color: "w",
-            state: getRoomState(room)
-        });
-
-        io.to(code).emit(
-            "room:state",
-            getRoomState(room)
-        );
-    });
-
-    // --------------------------------
-    // JOIN ROOM
-    // --------------------------------
+    // ---------------------------------
+    // JOIN ROOM AND START CLOCK
+    // ---------------------------------
 
     socket.on("room:join", (requestedCode, callback) => {
-
         if (typeof callback !== "function") return;
 
         if (getPlayerRoom(socket)) {
@@ -261,7 +399,12 @@ io.on("connection", (socket) => {
             });
         }
 
-        if (typeof requestedCode !== "string") {
+        if (
+            typeof requestedCode !== "string" ||
+            !/^[A-Z0-9]{6}$/.test(
+                requestedCode.trim().toUpperCase()
+            )
+        ) {
             return callback({
                 ok: false,
                 error: "Invalid Room Code"
@@ -269,14 +412,6 @@ io.on("connection", (socket) => {
         }
 
         const code = requestedCode.trim().toUpperCase();
-
-        if (!/^[A-Z0-9]{6}$/.test(code)) {
-            return callback({
-                ok: false,
-                error: "Invalid Room Code"
-            });
-        }
-
         const room = rooms.get(code);
 
         if (!room) {
@@ -300,7 +435,15 @@ io.on("connection", (socket) => {
         socket.data.roomCode = code;
         socket.data.color = "b";
 
-        console.log("Player Joined:", code);
+        // Start White player's clock
+        room.clock.activeColor = "w";
+        room.clock.lastUpdatedAt = Date.now();
+
+        console.log(
+            "Player Joined:",
+            code,
+            "- clock started"
+        );
 
         callback({
             ok: true,
@@ -315,12 +458,11 @@ io.on("connection", (socket) => {
         );
     });
 
-    // --------------------------------
+    // ---------------------------------
     // GET ONLINE GAME STATE
-    // --------------------------------
+    // ---------------------------------
 
-    socket.on("game:state", (callback) => {
-
+    socket.on("game:state", callback => {
         if (typeof callback !== "function") return;
 
         const room = getPlayerRoom(socket);
@@ -332,18 +474,19 @@ io.on("connection", (socket) => {
             });
         }
 
+        updateClockAndPublishTimeout(room);
+
         callback({
             ok: true,
-            game: getGameState(room.game)
+            game: getRoomGameState(room)
         });
     });
 
-    // --------------------------------
+    // ---------------------------------
     // GET LEGAL MOVES
-    // --------------------------------
+    // ---------------------------------
 
     socket.on("game:legal-moves", (square, callback) => {
-
         if (typeof callback !== "function") return;
 
         const room = getPlayerRoom(socket);
@@ -355,20 +498,22 @@ io.on("connection", (socket) => {
             });
         }
 
+        updateClockAndPublishTimeout(room);
+
+        if (room.timedOutColor || room.game.isGameOver()) {
+            return callback({
+                ok: false,
+                error: "Game already finished"
+            });
+        }
+
         if (
             typeof square !== "string" ||
-            !/^[a-h][1-8]$/.test(square)
+            !SQUARE_RE.test(square)
         ) {
             return callback({
                 ok: false,
                 error: "Invalid square"
-            });
-        }
-
-        if (room.game.isGameOver()) {
-            return callback({
-                ok: false,
-                error: "Game already finished"
             });
         }
 
@@ -404,12 +549,11 @@ io.on("connection", (socket) => {
         });
     });
 
-    // --------------------------------
-    // MAKE ONLINE CHESS MOVE
-    // --------------------------------
+    // ---------------------------------
+    // MAKE ONLINE MOVE
+    // ---------------------------------
 
     socket.on("game:move", (data, callback) => {
-
         if (typeof callback !== "function") return;
 
         const room = getPlayerRoom(socket);
@@ -421,14 +565,16 @@ io.on("connection", (socket) => {
             });
         }
 
-        if (room.game.isGameOver()) {
+        // Deduct time before validating move
+        updateClockAndPublishTimeout(room);
+
+        if (room.timedOutColor || room.game.isGameOver()) {
             return callback({
                 ok: false,
                 error: "Game already finished"
             });
         }
 
-        // Only the correct player can move
         if (room.game.turn() !== socket.data.color) {
             return callback({
                 ok: false,
@@ -441,8 +587,8 @@ io.on("connection", (socket) => {
             typeof data !== "object" ||
             typeof data.from !== "string" ||
             typeof data.to !== "string" ||
-            !/^[a-h][1-8]$/.test(data.from) ||
-            !/^[a-h][1-8]$/.test(data.to)
+            !SQUARE_RE.test(data.from) ||
+            !SQUARE_RE.test(data.to)
         ) {
             return callback({
                 ok: false,
@@ -466,25 +612,29 @@ io.on("connection", (socket) => {
                 promotion
             });
 
-            const gameState = getGameState(room.game);
+            // Switch to next player's clock
+            if (room.game.isGameOver()) {
+                room.clock.activeColor = null;
+                room.clock.lastUpdatedAt = null;
+
+            } else {
+                room.clock.activeColor = room.game.turn();
+                room.clock.lastUpdatedAt = Date.now();
+            }
 
             console.log(
                 `Room ${room.code}: ${move.san}`
             );
 
-            // Send updated game to BOTH players
-            io.to(room.code).emit(
-                "room:game",
-                gameState
-            );
+            publishRoomGame(room);
 
             callback({
                 ok: true,
                 move: move.san,
-                game: gameState
+                game: getRoomGameState(room)
             });
 
-        } catch (error) {
+        } catch {
             callback({
                 ok: false,
                 error: "Illegal chess move"
@@ -492,19 +642,15 @@ io.on("connection", (socket) => {
         }
     });
 
-    // --------------------------------
+    // ---------------------------------
     // PLAYER DISCONNECT
-    // --------------------------------
+    // ---------------------------------
 
     socket.on("disconnect", () => {
-
         console.log("Player Disconnected:", socket.id);
 
         const code = socket.data.roomCode;
-
-        if (!code) return;
-
-        const room = rooms.get(code);
+        const room = code && rooms.get(code);
 
         if (!room) return;
 
@@ -523,7 +669,8 @@ io.on("connection", (socket) => {
             otherSocket.leave(code);
 
             otherSocket.emit("room:closed", {
-                message: "Other player disconnected. Room closed."
+                message:
+                    "Other player disconnected. Room closed."
             });
         }
 
@@ -533,9 +680,27 @@ io.on("connection", (socket) => {
     });
 });
 
-// ====================================
+// =====================================
+// CLOCK BROADCAST EVERY SECOND
+// =====================================
+
+setInterval(() => {
+    for (const room of rooms.values()) {
+
+        if (!room.black) continue;
+
+        updateClockAndPublishTimeout(room);
+
+        io.to(room.code).emit("room:clock", {
+            roomCode: room.code,
+            clock: getClockState(room)
+        });
+    }
+}, 1000);
+
+// =====================================
 // START SERVER
-// ====================================
+// =====================================
 
 httpServer.listen(PORT, () => {
     console.log(
@@ -543,4 +708,5 @@ httpServer.listen(PORT, () => {
     );
 
     console.log("Socket.IO Server is Ready!");
+    console.log("Chess Clock Server is Ready!");
 });
