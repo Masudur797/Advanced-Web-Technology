@@ -1,32 +1,57 @@
 
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
+
     <meta name="viewport"
           content="width=device-width, initial-scale=1.0">
+
     <title>ChessArena | Online Chess</title>
+
+    <!-- Main CSS -->
     <link rel="stylesheet" href="/css/style.css">
 </head>
+
 <body>
 
+    <!-- Navigation Bar -->
     <header class="navbar">
         <h2>♟ ChessArena</h2>
         <span>Online Multiplayer Chess</span>
     </header>
 
+    <!-- Main Game Section -->
     <main class="game-container">
+
         <h1>Welcome to ChessArena</h1>
+
         <p>Your Chess Journey Starts Here</p>
 
-        <div class="chess-board" id="chessBoard"></div>
-
-        <div class="game-info">
-            <h3>White to Move</h3>
-            <p>Game Status: Ready</p>
+        <!-- Chess Board -->
+        <div class="chess-board"
+             id="chessBoard"
+             aria-label="Chess Board">
         </div>
+
+        <!-- Game Information -->
+        <div class="game-info">
+
+            <h3>White to Move</h3>
+
+            <p>Game Status: Ready</p>
+
+            <!-- New Game Button
+                 will be created by app.js -->
+
+        </div>
+
     </main>
 
-    <script src="/js/app.js"></script>
+    <!-- Main JavaScript -->
+    <script src="./js/app.js"></script>
+
 </body>
 </html>
+
