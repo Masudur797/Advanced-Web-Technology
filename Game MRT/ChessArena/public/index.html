@@ -4,54 +4,79 @@
 
 <head>
     <meta charset="UTF-8">
-
     <meta name="viewport"
           content="width=device-width, initial-scale=1.0">
 
-    <title>ChessArena | Online Chess</title>
+    <title>ChessArena | Multiplayer Chess</title>
 
-    <!-- Main CSS -->
     <link rel="stylesheet" href="/css/style.css">
 </head>
 
 <body>
 
-    <!-- Navigation Bar -->
     <header class="navbar">
         <h2>♟ ChessArena</h2>
         <span>Online Multiplayer Chess</span>
     </header>
 
-    <!-- Main Game Section -->
     <main class="game-container">
 
         <h1>Welcome to ChessArena</h1>
-
         <p>Your Chess Journey Starts Here</p>
 
         <!-- Chess Board -->
         <div class="chess-board"
-             id="chessBoard"
-             aria-label="Chess Board">
+             id="chessBoard">
         </div>
 
-        <!-- Game Information -->
+        <!-- Game Status -->
         <div class="game-info">
-
             <h3>White to Move</h3>
-
             <p>Game Status: Ready</p>
-
-            <!-- New Game Button
-                 will be created by app.js -->
-
         </div>
+
+        <!-- Multiplayer Room Panel -->
+        <section class="room-panel">
+
+            <h2>Multiplayer Room</h2>
+
+            <div class="room-actions">
+
+                <button id="createRoomBtn"
+                        type="button">
+                    Create Room
+                </button>
+
+                <input type="text"
+                       id="roomCodeInput"
+                       placeholder="Enter Room Code"
+                       maxlength="6"
+                       autocomplete="off">
+
+                <button id="joinRoomBtn"
+                        type="button">
+                    Join Room
+                </button>
+
+            </div>
+
+            <p id="roomStatus">
+                Create or join a room to get started.
+            </p>
+
+            <p id="roomDetails">
+                Not in a room
+            </p>
+
+        </section>
 
     </main>
 
-    <!-- Main JavaScript -->
-    <script src="./js/app.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/js/app.js"></script>
+    <script src="/js/socket-client.js"></script>
 
 </body>
 </html>
+
 
