@@ -1,7 +1,10 @@
 
 const socket = io();
 
-// UI Elements
+// Allow app.js to send socket requests
+window.chessArenaSocket = socket;
+
+// Room UI
 const createRoomBtn =
     document.getElementById("createRoomBtn");
 
@@ -17,19 +20,22 @@ const roomStatus =
 const roomDetails =
     document.getElementById("roomDetails");
 
-// Connection indicator
+// Connection status
 const connectionStatus = document.createElement("p");
 
 connectionStatus.id = "connectionStatus";
 connectionStatus.textContent = "Socket: Connecting...";
 
+connectionStatus.style.marginTop = "15px";
+
 document.querySelector(".game-info")
     .appendChild(connectionStatus);
 
-// Current room
+// Multiplayer room information
 let currentRoom = null;
+let waitingForRoomResponse = false;
 
-// Display room message
+// Display room messages
 function showRoomMessage(message, isError = false) {
     roomStatus.textContent = message;
 
@@ -38,27 +44,32 @@ function showRoomMessage(message, isError = false) {
         : "#22c55e";
 }
 
-// Enable or disable room controls
+// Update buttons
 function updateControls() {
     const canChooseRoom =
-        socket.connected && !currentRoom;
+        socket.connected &&
+        !currentRoom &&
+        !waitingForRoomResponse;
 
     createRoomBtn.disabled = !canChooseRoom;
     joinRoomBtn.disabled = !canChooseRoom;
     roomCodeInput.disabled = !canChooseRoom;
 }
 
-// Clear room information
+// Clear room when connection is lost
 function clearRoom(message) {
     currentRoom = null;
+    waitingForRoomResponse = false;
 
     roomDetails.textContent = "Not in a room";
+
+    window.ChessArenaGame.leaveRoom();
 
     showRoomMessage(message, true);
     updateControls();
 }
 
-// Update current room information
+// Update room details
 function updateRoomState(state) {
     if (!currentRoom) return;
 
@@ -75,18 +86,31 @@ function updateRoomState(state) {
         `You: ${color} | ` +
         `Players: ${state.playerCount}/2`;
 
+    // Synchronize the room's chess state
+    window.ChessArenaGame.syncRoom(
+        state.game,
+        state.ready
+    );
+
     if (state.ready) {
         showRoomMessage(
-            "Both players joined! Move sync comes in Step 5.3."
+            "Both players joined! Game is ready."
         );
     } else {
-        showRoomMessage("Waiting for second player...");
+        showRoomMessage(
+            "Waiting for second player..."
+        );
     }
 }
 
-// Handle create/join response
+// Handle Create Room / Join Room response
 function handleRoomResponse(error, response) {
-    if (!socket.connected) return;
+    waitingForRoomResponse = false;
+
+    if (!socket.connected) {
+        clearRoom("Connection lost. Please reconnect.");
+        return;
+    }
 
     if (error || !response || !response.ok) {
         const message = error
@@ -103,40 +127,49 @@ function handleRoomResponse(error, response) {
         color: response.color
     };
 
+    // Switch local chess board into online mode
+    window.ChessArenaGame.enterRoom(
+        response.state.game,
+        response.color,
+        response.state.ready
+    );
+
     updateRoomState(response.state);
     updateControls();
 }
 
-// Socket connected
+// Socket Connected
 socket.on("connect", () => {
-
     console.log("Socket Connected:", socket.id);
 
-    connectionStatus.textContent = "🟢 Socket Connected";
+    connectionStatus.textContent =
+        "🟢 Socket Connected";
+
     connectionStatus.style.color = "#22c55e";
 
-    // On reconnection, old room membership is not restored
     if (currentRoom) {
-        clearRoom("Reconnected. Please create or join a room.");
+        clearRoom(
+            "Reconnected. Please create or join a new room."
+        );
     } else {
         updateControls();
     }
 });
 
-// Socket disconnected
+// Socket Disconnected
 socket.on("disconnect", () => {
+    console.log("Socket Disconnected");
 
     connectionStatus.textContent =
         "🔴 Socket Disconnected";
 
     connectionStatus.style.color = "#ef4444";
 
-    clearRoom("Connection lost. Please reconnect.");
+    clearRoom("Connection lost. Room closed.");
 });
 
-// Socket connection error
-socket.on("connect_error", (error) => {
-
+// Connection Error
+socket.on("connect_error", error => {
     console.error("Socket Error:", error.message);
 
     connectionStatus.textContent =
@@ -147,23 +180,34 @@ socket.on("connect_error", (error) => {
     updateControls();
 });
 
-// Receive room updates
-socket.on("room:state", (state) => {
+// Receive room information
+socket.on("room:state", state => {
     updateRoomState(state);
 });
 
-// Room closed
-socket.on("room:closed", (data) => {
-    clearRoom(data.message || "Room closed");
+// NEW: Receive real-time chess moves
+socket.on("room:game", game => {
+    if (!currentRoom) return;
+
+    console.log("Game State Updated:", game.fen);
+
+    window.ChessArenaGame.syncRoom(game, true);
 });
 
-// Create Room button
+// Room closed by server
+socket.on("room:closed", data => {
+    clearRoom(
+        data.message || "Room closed"
+    );
+});
+
+// Create Room
 createRoomBtn.addEventListener("click", () => {
-
     if (!socket.connected || currentRoom) return;
+    if (waitingForRoomResponse) return;
 
-    createRoomBtn.disabled = true;
-    joinRoomBtn.disabled = true;
+    waitingForRoomResponse = true;
+    updateControls();
 
     showRoomMessage("Creating room...");
 
@@ -173,10 +217,10 @@ createRoomBtn.addEventListener("click", () => {
     );
 });
 
-// Join Room button
+// Join Room
 joinRoomBtn.addEventListener("click", () => {
-
     if (!socket.connected || currentRoom) return;
+    if (waitingForRoomResponse) return;
 
     const code = roomCodeInput.value
         .trim()
@@ -190,8 +234,8 @@ joinRoomBtn.addEventListener("click", () => {
         return;
     }
 
-    createRoomBtn.disabled = true;
-    joinRoomBtn.disabled = true;
+    waitingForRoomResponse = true;
+    updateControls();
 
     showRoomMessage("Joining room...");
 
@@ -202,5 +246,5 @@ joinRoomBtn.addEventListener("click", () => {
     );
 });
 
-// Initially disable buttons until connected
+// Disable controls until socket connects
 updateControls();
