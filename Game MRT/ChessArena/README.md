@@ -233,6 +233,20 @@ The structure above highlights the main application files.
 
 ---
 
+
+<h2 align="center">♟️ ChessArena Gameplay</h2>
+
+<p align="center">
+    <img width="507" height="823" alt="Screenshot 2026-11-28 045439" src="https://github.com/user-attachments/assets/216a0f0f-dd37-41ac-9c72-8c748ceedae1" />
+
+</p>
+
+<p align="center">
+  Real-Time Multiplayer Chess Experience
+</p>
+
+
+
 ## ♟️ Chess Rule Engine
 
 ChessArena uses the Chess.js library to manage chess rules.
@@ -457,21 +471,6 @@ Create a room in the first window and join it from the second window using the g
 Both clients should connect to the same running server.
 
 To play across different devices, the server must be reachable from both devices.
-
----
-
-## 🖼️ Screenshots and Demonstrations
-
-Actual application screenshots can be added here to demonstrate:
-
-- Main ChessArena interface.
-- Interactive chessboard.
-- Multiplayer room creation.
-- Online chess match.
-- Live chess clock.
-- Draw offer and resignation system.
-- Match result screen.
-- Mobile layout.
 
 ---
 
